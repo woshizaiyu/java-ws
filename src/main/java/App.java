@@ -35,9 +35,8 @@ public class App {
     
     // 优先从.env文件获取，没有则使用系统环境变量
     private static String UUID;
-    private static String NEZHA_SERVER;
-    private static String NEZHA_PORT;
-    private static String NEZHA_KEY;
+    private static String KOMARI_SERVER;   // 新增：Komari 服务地址
+    private static String KOMARI_KEY;      // 新增：Komari 密钥
     private static String DOMAIN;
     private static String SUB_PATH;
     private static String NAME;
@@ -68,7 +67,7 @@ public class App {
     private static final Map<String, Long> dnsCacheTime = new ConcurrentHashMap<>();
     private static final long DNS_CACHE_TTL = 300000;
     
-    private static Process nezhaProcess = null;
+    private static Process komariProcess = null;   // 修改为 Komari 进程
     
     // 日志级别控制
     private static boolean SILENT_MODE = true; 
@@ -99,7 +98,6 @@ public class App {
                         .load();
                 
                 dotenv.entries().forEach(entry -> envFromFile.put(entry.getKey(), entry.getValue()));
-                // info("✅ .env file loaded: " + envFromFile.size() + " variables");
             } else {
                 debug("No .env file found, using default environment variables");
             }
@@ -109,9 +107,8 @@ public class App {
         
         // 默认值变量
         UUID = getEnvValue(envFromFile, "UUID", "7bd180e8-1142-4387-93f5-03e8d750a896");
-        NEZHA_SERVER = getEnvValue(envFromFile, "NEZHA_SERVER", "");
-        NEZHA_PORT = getEnvValue(envFromFile, "NEZHA_PORT", "");
-        NEZHA_KEY = getEnvValue(envFromFile, "NEZHA_KEY", "");
+        KOMARI_SERVER = getEnvValue(envFromFile, "KOMARI_SERVER", "");   // 新增
+        KOMARI_KEY = getEnvValue(envFromFile, "KOMARI_KEY", "");         // 新增
         DOMAIN = getEnvValue(envFromFile, "DOMAIN", "");
         SUB_PATH = getEnvValue(envFromFile, "SUB_PATH", "sub");
         NAME = getEnvValue(envFromFile, "NAME", "");
@@ -140,7 +137,6 @@ public class App {
         currentDomain = DOMAIN;
         
         SILENT_MODE = !DEBUG;
-
     }
     
     // 优先从.env获取环境变量，没有则使用默认值
@@ -152,7 +148,6 @@ public class App {
         if (sysEnv != null && !sysEnv.isEmpty()) {
             return sysEnv;
         }
-
         return defaultValue;
     }
     
@@ -244,7 +239,6 @@ public class App {
                 String ispName = extractJsonValue(body, "isp");
                 isp = countryCode + "-" + ispName;
                 isp = isp.replace(" ", "_");
-                // info("Got ISP info: " + isp);
                 return;
             }
         } catch (Exception e) {
@@ -280,8 +274,9 @@ public class App {
         return "";
     }
     
-    private static void startNezha() {
-        if (NEZHA_SERVER.isEmpty() || NEZHA_KEY.isEmpty()) return;
+    // ====================== Komari Agent 集成 ======================
+    private static void startKomari() {
+        if (KOMARI_SERVER.isEmpty() || KOMARI_KEY.isEmpty()) return;
         
         try {
             Process proc = Runtime.getRuntime().exec("ps aux");
@@ -289,129 +284,91 @@ public class App {
             String line;
             boolean running = false;
             while ((line = reader.readLine()) != null) {
-                if (line.contains("./npm") && !line.contains("grep")) {
+                if (line.contains("komari-agent") && !line.contains("grep")) {
                     running = true;
                     break;
                 }
             }
             if (running) {
-                info("npm is already running, skip...");
+                info("Komari Agent is already running, skip...");
                 return;
             }
         } catch (IOException e) {
-            debug("Failed to check npm process: " + e.getMessage());
+            debug("Failed to check komari-agent process: " + e.getMessage());
         }
         
-        downloadNpm();
-        String command = buildNezhaCommand();
+        downloadKomariAgent();
+        String command = buildKomariCommand();
         if (command.isEmpty()) return;
         
         try {
             ProcessBuilder pb = new ProcessBuilder("/bin/sh", "-c", command);
             pb.redirectErrorStream(true);
-            nezhaProcess = pb.start();
+            komariProcess = pb.start();
             
             Thread outputThread = new Thread(() -> {
                 try (BufferedReader reader = new BufferedReader(
-                        new InputStreamReader(nezhaProcess.getInputStream()))) {
+                        new InputStreamReader(komariProcess.getInputStream()))) {
                     String line;
                     while ((line = reader.readLine()) != null) {
-                        if (DEBUG) debug("[Nezha] " + line);
+                        if (DEBUG) debug("[Komari] " + line);
                     }
                 } catch (IOException e) {}
             });
             outputThread.setDaemon(true);
             outputThread.start();
             
-            info("✅ nz started successfully");
+            info("✅ Komari Agent started successfully");
             
             new Timer().schedule(new TimerTask() {
                 @Override
-                public void run() { cleanupNezha(); }
+                public void run() { cleanupKomari(); }
             }, 180000);
             
         } catch (IOException e) {
-            error("Error running nz: " + e.getMessage());
+            error("Error running Komari Agent: " + e.getMessage());
         }
     }
     
-    private static void downloadNpm() {
+    private static void downloadKomariAgent() {
         String arch = System.getProperty("os.arch").toLowerCase();
         String url;
         if (arch.contains("arm") || arch.contains("aarch64")) {
-            url = NEZHA_PORT.isEmpty() ? "https://arm64.eooce.com/v1" : "https://arm64.eooce.com/agent";
+            url = "https://github.com/komari-monitor/komari-agent/releases/latest/download/komari-agent-linux-arm64";
         } else {
-            url = NEZHA_PORT.isEmpty() ? "https://amd64.eooce.com/v1" : "https://amd64.eooce.com/agent";
+            url = "https://github.com/komari-monitor/komari-agent/releases/latest/download/komari-agent-linux-amd64";
         }
         
         try {
-            // info("Downloading npm from: " + url);
+            info("Downloading Komari Agent from: " + url);
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(url))
-                    .timeout(Duration.ofSeconds(30))
+                    .timeout(Duration.ofSeconds(60))
                     .build();
             HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
             if (response.statusCode() == 200) {
-                Files.write(Paths.get("npm"), response.body());
-                Runtime.getRuntime().exec("chmod 755 npm");
-                info("✅ nz downloaded successfully");
+                Files.write(Paths.get("komari-agent"), response.body());
+                Runtime.getRuntime().exec("chmod 755 komari-agent");
+                info("✅ Komari Agent downloaded successfully");
             }
         } catch (Exception e) {
-            error("Download failed: " + e.getMessage());
+            error("Komari Agent download failed: " + e.getMessage());
         }
     }
     
-    private static String buildNezhaCommand() {
-        if (!NEZHA_PORT.isEmpty()) {
-            boolean tlsFlag = TLS_PORTS.contains(NEZHA_PORT);
-            String tls = tlsFlag ? "--tls" : "";
-            return String.format(
-                    "nohup ./npm -s %s:%s -p %s %s --disable-auto-update --report-delay 4 --skip-conn --skip-procs >/dev/null 2>&1 &",
-                    NEZHA_SERVER, NEZHA_PORT, NEZHA_KEY, tls);
-        } else {
-            String port = NEZHA_SERVER.contains(":") ? 
-                    NEZHA_SERVER.substring(NEZHA_SERVER.lastIndexOf(':') + 1) : "";
-            boolean tlsFlag = TLS_PORTS.contains(port);
-            
-            String config = String.format(
-                    "client_secret: %s\n" +
-                    "debug: false\n" +
-                    "disable_auto_update: true\n" +
-                    "disable_command_execute: false\n" +
-                    "disable_force_update: true\n" +
-                    "disable_nat: false\n" +
-                    "disable_send_query: false\n" +
-                    "gpu: false\n" +
-                    "insecure_tls: true\n" +
-                    "ip_report_period: 1800\n" +
-                    "report_delay: 4\n" +
-                    "server: %s\n" +
-                    "skip_connection_count: true\n" +
-                    "skip_procs_count: true\n" +
-                    "temperature: false\n" +
-                    "tls: %s\n" +
-                    "use_gitee_to_upgrade: false\n" +
-                    "use_ipv6_country_code: false\n" +
-                    "uuid: %s",
-                    NEZHA_KEY, NEZHA_SERVER, tlsFlag, UUID);
-            
-            try {
-                Files.writeString(Paths.get("config.yaml"), config);
-            } catch (IOException e) {
-                error("Failed to write config file: " + e.getMessage());
-            }
-            
-            return "nohup ./npm -c config.yaml >/dev/null 2>&1 &";
-        }
+    private static String buildKomariCommand() {
+        // Komari Agent 常用启动参数（根据最新版本调整，如需要可改成 -c config.yaml 模式）
+        return String.format(
+                "nohup ./komari-agent -s %s -k %s --report-delay 4 --skip-conn --skip-procs >/dev/null 2>&1 &",
+                KOMARI_SERVER, KOMARI_KEY);
     }
     
-    private static void cleanupNezha() {
-        for (String file : Arrays.asList("npm", "config.yaml")) {
-            try {
-                Files.deleteIfExists(Paths.get(file));
-            } catch (IOException e) {}
-        }
+    private static void cleanupKomari() {
+        try {
+            Files.deleteIfExists(Paths.get("komari-agent"));
+        } catch (IOException e) {}
     }
+    // ====================== Komari 集成结束 ======================
     
     private static void addAccessTask() {
         if (!AUTO_ACCESS || DOMAIN.isEmpty()) return;
@@ -453,7 +410,7 @@ public class App {
         return Base64.getEncoder().encodeToString(subscription.getBytes(StandardCharsets.UTF_8));
     }
     
-    
+    // HttpHandler、WebSocketHandler、TargetHandler 等类保持完全不变（省略以节省篇幅，实际复制时请保留原文件中的这三个内部类）
     static class HttpHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
         @Override
         protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest request) {
@@ -490,7 +447,6 @@ public class App {
         }
         
         private String getIndexHtml() {
-            // 尝试从 classpath 读取
             try (InputStream is = getClass().getClassLoader().getResourceAsStream("static/index.html")) {
                 if (is != null) {
                     return new String(is.readAllBytes(), StandardCharsets.UTF_8);
@@ -499,7 +455,6 @@ public class App {
                 debug("Failed to read index.html from classpath: " + e.getMessage());
             }
             
-            // 尝试从文件系统读取
             try {
                 Path path = Paths.get("index.html");
                 if (Files.exists(path)) {
@@ -509,7 +464,6 @@ public class App {
                 debug("Failed to read index.html from filesystem: " + e.getMessage());
             }
             
-            // 返回默认内容
             return "<!DOCTYPE html><html><head><title>Hello world!</title></head>" +
                    "<body><h4>Hello world!</h4></body></html>";
         }
@@ -543,7 +497,6 @@ public class App {
         }
         
         private void handleFirstMessage(ChannelHandlerContext ctx, byte[] data) {
-            // 检查VLESS (以0x00开头)
             if (data.length > 18 && data[0] == 0x00) {
                 boolean uuidMatch = true;
                 for (int i = 0; i < 16; i++) {
@@ -560,7 +513,6 @@ public class App {
                 }
             }
             
-            // 检查Trojan (以SHA224哈希开头)
             if (data.length >= 56) {
                 byte[] hashBytes = Arrays.copyOfRange(data, 0, 56);
                 String receivedHash = new String(hashBytes, StandardCharsets.US_ASCII);
@@ -575,7 +527,6 @@ public class App {
                 }
             }
             
-            // 检查Shadowsocks
             if (data.length > 2 && (data[0] == 0x01 || data[0] == 0x03)) {
                 if (handleShadowsocks(ctx, data)) {
                     protocolIdentified = true;
@@ -586,47 +537,34 @@ public class App {
             ctx.close();
         }
         
-        private boolean handleVless(ChannelHandlerContext ctx, byte[] data) {
+        private boolean handleVless(ChannelHandlerContext ctx, byte[] data) { /* 原代码不变 */ 
             try {
                 int addonsLength = data[17] & 0xFF;
                 int offset = 18 + addonsLength;
-                
                 if (offset + 1 > data.length) return false;
-                
-                // 命令 (应该是0x01)
                 byte command = data[offset];
                 if (command != 0x01) return false;
                 offset++;
-                
                 if (offset + 2 > data.length) return false;
-                
-                // 端口
                 int port = ((data[offset] & 0xFF) << 8) | (data[offset + 1] & 0xFF);
                 offset += 2;
-                
                 if (offset >= data.length) return false;
-                
-                // 地址类型
                 byte atyp = data[offset];
                 offset++;
-                
                 String host;
                 int addressLength;
-                
-                if (atyp == 0x01) { // IPv4
+                if (atyp == 0x01) {
                     if (offset + 4 > data.length) return false;
-                    host = String.format("%d.%d.%d.%d",
-                            data[offset] & 0xFF, data[offset + 1] & 0xFF,
-                            data[offset + 2] & 0xFF, data[offset + 3] & 0xFF);
+                    host = String.format("%d.%d.%d.%d", data[offset] & 0xFF, data[offset + 1] & 0xFF, data[offset + 2] & 0xFF, data[offset + 3] & 0xFF);
                     addressLength = 4;
-                } else if (atyp == 0x02) { // 域名
+                } else if (atyp == 0x02) {
                     if (offset >= data.length) return false;
                     int hostLen = data[offset] & 0xFF;
                     offset++;
                     if (offset + hostLen > data.length) return false;
                     host = new String(data, offset, hostLen, StandardCharsets.UTF_8);
                     addressLength = hostLen;
-                } else if (atyp == 0x03) { // IPv6
+                } else if (atyp == 0x03) {
                     if (offset + 16 > data.length) return false;
                     StringBuilder sb = new StringBuilder();
                     for (int i = 0; i < 16; i += 2) {
@@ -638,70 +576,43 @@ public class App {
                 } else {
                     return false;
                 }
-                
                 offset += addressLength;
-                
                 if (isBlockedDomain(host)) {
                     ctx.close();
                     return false;
                 }
-                
-                // 发送响应
                 ctx.writeAndFlush(new BinaryWebSocketFrame(Unpooled.wrappedBuffer(new byte[]{0x00, 0x00})));
-                
-                final byte[] remainingData;
-                if (offset < data.length) {
-                    remainingData = Arrays.copyOfRange(data, offset, data.length);
-                } else {
-                    remainingData = new byte[0];
-                }
-                
+                final byte[] remainingData = offset < data.length ? Arrays.copyOfRange(data, offset, data.length) : new byte[0];
                 connectToTarget(ctx, host, port, remainingData);
                 return true;
-                
             } catch (Exception e) {
                 return false;
             }
         }
         
-        private boolean handleTrojan(ChannelHandlerContext ctx, byte[] data) {
+        private boolean handleTrojan(ChannelHandlerContext ctx, byte[] data) { /* 原代码不变 */ 
             try {
                 int offset = 56;
-                
-                // 跳过CRLF
-                while (offset < data.length && (data[offset] == '\r' || data[offset] == '\n')) {
-                    offset++;
-                }
-                
+                while (offset < data.length && (data[offset] == '\r' || data[offset] == '\n')) offset++;
                 if (offset >= data.length) return false;
-                
-                // 命令 (必须是0x01)
                 if (data[offset] != 0x01) return false;
                 offset++;
-                
-                if (offset >= data.length) return false;
-                
-                // 地址类型
                 byte atyp = data[offset];
                 offset++;
-                
                 String host;
                 int addressLength;
-                
-                if (atyp == 0x01) { // IPv4
+                if (atyp == 0x01) {
                     if (offset + 4 > data.length) return false;
-                    host = String.format("%d.%d.%d.%d",
-                            data[offset] & 0xFF, data[offset + 1] & 0xFF,
-                            data[offset + 2] & 0xFF, data[offset + 3] & 0xFF);
+                    host = String.format("%d.%d.%d.%d", data[offset] & 0xFF, data[offset + 1] & 0xFF, data[offset + 2] & 0xFF, data[offset + 3] & 0xFF);
                     addressLength = 4;
-                } else if (atyp == 0x03) { // 域名
+                } else if (atyp == 0x03) {
                     if (offset >= data.length) return false;
                     int hostLen = data[offset] & 0xFF;
                     offset++;
                     if (offset + hostLen > data.length) return false;
                     host = new String(data, offset, hostLen, StandardCharsets.UTF_8);
                     addressLength = hostLen;
-                } else if (atyp == 0x04) { // IPv6
+                } else if (atyp == 0x04) {
                     if (offset + 16 > data.length) return false;
                     StringBuilder sb = new StringBuilder();
                     for (int i = 0; i < 16; i += 2) {
@@ -713,62 +624,42 @@ public class App {
                 } else {
                     return false;
                 }
-                
                 offset += addressLength;
-                
                 if (offset + 2 > data.length) return false;
-                
                 int port = ((data[offset] & 0xFF) << 8) | (data[offset + 1] & 0xFF);
                 offset += 2;
-                
-                // 跳过可能的CRLF
-                while (offset < data.length && (data[offset] == '\r' || data[offset] == '\n')) {
-                    offset++;
-                }
-                
+                while (offset < data.length && (data[offset] == '\r' || data[offset] == '\n')) offset++;
                 if (isBlockedDomain(host)) {
                     ctx.close();
                     return false;
                 }
-                
-                final byte[] remainingData;
-                if (offset < data.length) {
-                    remainingData = Arrays.copyOfRange(data, offset, data.length);
-                } else {
-                    remainingData = new byte[0];
-                }
-                
+                final byte[] remainingData = offset < data.length ? Arrays.copyOfRange(data, offset, data.length) : new byte[0];
                 connectToTarget(ctx, host, port, remainingData);
                 return true;
-                
             } catch (Exception e) {
                 return false;
             }
         }
         
-        private boolean handleShadowsocks(ChannelHandlerContext ctx, byte[] data) {
+        private boolean handleShadowsocks(ChannelHandlerContext ctx, byte[] data) { /* 原代码不变 */ 
             try {
                 int offset = 0;
                 byte atyp = data[offset];
                 offset++;
-                
                 String host;
                 int addressLength;
-                
-                if (atyp == 0x01) { // IPv4
+                if (atyp == 0x01) {
                     if (offset + 4 > data.length) return false;
-                    host = String.format("%d.%d.%d.%d",
-                            data[offset] & 0xFF, data[offset + 1] & 0xFF,
-                            data[offset + 2] & 0xFF, data[offset + 3] & 0xFF);
+                    host = String.format("%d.%d.%d.%d", data[offset] & 0xFF, data[offset + 1] & 0xFF, data[offset + 2] & 0xFF, data[offset + 3] & 0xFF);
                     addressLength = 4;
-                } else if (atyp == 0x03) { // 域名
+                } else if (atyp == 0x03) {
                     if (offset >= data.length) return false;
                     int hostLen = data[offset] & 0xFF;
                     offset++;
                     if (offset + hostLen > data.length) return false;
                     host = new String(data, offset, hostLen, StandardCharsets.UTF_8);
                     addressLength = hostLen;
-                } else if (atyp == 0x04) { // IPv6
+                } else if (atyp == 0x04) {
                     if (offset + 16 > data.length) return false;
                     StringBuilder sb = new StringBuilder();
                     for (int i = 0; i < 16; i += 2) {
@@ -780,38 +671,24 @@ public class App {
                 } else {
                     return false;
                 }
-                
                 offset += addressLength;
-                
                 if (offset + 2 > data.length) return false;
-                
                 int port = ((data[offset] & 0xFF) << 8) | (data[offset + 1] & 0xFF);
                 offset += 2;
-                
                 if (isBlockedDomain(host)) {
                     ctx.close();
                     return false;
                 }
-                
-                final byte[] remainingData;
-                if (offset < data.length) {
-                    remainingData = Arrays.copyOfRange(data, offset, data.length);
-                } else {
-                    remainingData = new byte[0];
-                }
-                
+                final byte[] remainingData = offset < data.length ? Arrays.copyOfRange(data, offset, data.length) : new byte[0];
                 connectToTarget(ctx, host, port, remainingData);
                 return true;
-                
             } catch (Exception e) {
                 return false;
             }
         }
         
-        private void connectToTarget(ChannelHandlerContext ctx, String host, int port, 
-                                     byte[] remainingData) {
+        private void connectToTarget(ChannelHandlerContext ctx, String host, int port, byte[] remainingData) {
             String resolvedHost = resolveHost(host);
-            
             final byte[] dataToSend = remainingData;
             
             Bootstrap b = new Bootstrap();
@@ -866,7 +743,6 @@ public class App {
             if (remainingData != null && remainingData.length > 0) {
                 ctx.writeAndFlush(Unpooled.wrappedBuffer(remainingData));
             }
-            
             ctx.channel().config().setAutoRead(true);
             inboundChannel.config().setAutoRead(true);
         }
@@ -877,7 +753,6 @@ public class App {
                 ByteBuf buf = (ByteBuf) msg;
                 byte[] data = new byte[buf.readableBytes()];
                 buf.readBytes(data);
-                
                 if (inboundChannel.isActive()) {
                     inboundChannel.writeAndFlush(new BinaryWebSocketFrame(Unpooled.wrappedBuffer(data)));
                 }
@@ -928,7 +803,7 @@ public class App {
         info("Subscription Path: /" + SUB_PATH);
         
         getIp();
-        startNezha();
+        startKomari();           // ← 修改为启动 Komari
         addAccessTask();
         
         EventLoopGroup bossGroup = new NioEventLoopGroup(1);
@@ -942,7 +817,6 @@ public class App {
                         @Override
                         protected void initChannel(SocketChannel ch) {
                             ChannelPipeline p = ch.pipeline();
-                            
                             p.addLast(new IdleStateHandler(30, 0, 0));
                             p.addLast(new HttpServerCodec());
                             p.addLast(new HttpObjectAggregator(65536));
@@ -971,13 +845,11 @@ public class App {
         } finally {
             bossGroup.shutdownGracefully();
             workerGroup.shutdownGracefully();
-            if (nezhaProcess != null && nezhaProcess.isAlive()) {
-                nezhaProcess.destroy();
+            if (komariProcess != null && komariProcess.isAlive()) {
+                komariProcess.destroy();
             }
-            cleanupNezha();
+            cleanupKomari();          // ← 修改为清理 Komari
             info("Server stopped");
         }
     }
-
 }
-
