@@ -4,44 +4,45 @@ on:
   workflow_dispatch:
     inputs:
       UUID:
-        description: 'UUID：运行哪吒v1,在不同的平台需要改,否则会被覆盖'
+        description: 'UUID（强烈建议填写自己的UUID）'
         required: false
         default: ''
         type: string
-      NEZHA_SERVER:
-        description: '哪吒v1填写形式：nz.abc.com:8008   哪吒v0填写形式：nz.abc.com'
-        required: false
-        default: 'nezha.loc.cc:443'
-        type: string
-      NEZHA_PORT:
-        description: '哪吒v1没有此变量，v0的agent端口为{443,8443,2096,2087,2083,2053}其中之一时开启tls'
+
+      KOMARI_SERVER:
+        description: 'Komari 服务地址，例如：komari.example.com:25774'
         required: false
         default: ''
         type: string
-      NEZHA_KEY:
-        description: 'v1的NZ_CLIENT_SECRET或v0的agent密钥'
+
+      KOMARI_KEY:
+        description: 'Komari Agent 密钥（在面板添加节点时获得）'
         required: false
         default: ''
         type: string
+
       DOMAIN:
-        description: '反代的域名，不带前缀'
+        description: '反代的域名，不带前缀（如 example.com）'
         required: false
         default: ''
         type: string
+
       SUB_PATH:
-        description: '订阅路径'
+        description: '订阅路径（默认 sub）'
         required: false
-        default: ''
+        default: 'sub'
         type: string
+
       NAME:
         description: '节点名称前缀（可选）'
         required: false
         default: ''
         type: string
+
       PORT:
-        description: 'http和ws服务端口'
+        description: 'HTTP 和 WS 服务端口（默认 3000）'
         required: false
-        default: ''
+        default: '3000'
         type: string
 
 jobs:
@@ -75,16 +76,12 @@ jobs:
             sed -i 's|getEnvValue(envFromFile, "UUID", "[^"]*")|getEnvValue(envFromFile, "UUID", "${{ inputs.UUID }}")|g' "$FILE"
           fi
           
-          if [ -n "${{ inputs.NEZHA_SERVER }}" ]; then
-            sed -i 's|getEnvValue(envFromFile, "NEZHA_SERVER", "[^"]*")|getEnvValue(envFromFile, "NEZHA_SERVER", "${{ inputs.NEZHA_SERVER }}")|g' "$FILE"
+          if [ -n "${{ inputs.KOMARI_SERVER }}" ]; then
+            sed -i 's|getEnvValue(envFromFile, "KOMARI_SERVER", "[^"]*")|getEnvValue(envFromFile, "KOMARI_SERVER", "${{ inputs.KOMARI_SERVER }}")|g' "$FILE"
           fi
           
-          if [ -n "${{ inputs.NEZHA_PORT }}" ]; then
-            sed -i 's|getEnvValue(envFromFile, "NEZHA_PORT", "[^"]*")|getEnvValue(envFromFile, "NEZHA_PORT", "${{ inputs.NEZHA_PORT }}")|g' "$FILE"
-          fi
-          
-          if [ -n "${{ inputs.NEZHA_KEY }}" ]; then
-            sed -i 's|getEnvValue(envFromFile, "NEZHA_KEY", "[^"]*")|getEnvValue(envFromFile, "NEZHA_KEY", "${{ inputs.NEZHA_KEY }}")|g' "$FILE"
+          if [ -n "${{ inputs.KOMARI_KEY }}" ]; then
+            sed -i 's|getEnvValue(envFromFile, "KOMARI_KEY", "[^"]*")|getEnvValue(envFromFile, "KOMARI_KEY", "${{ inputs.KOMARI_KEY }}")|g' "$FILE"
           fi
           
           if [ -n "${{ inputs.DOMAIN }}" ]; then
@@ -124,8 +121,12 @@ jobs:
           name: "java-uuid:${{ inputs.UUID }}"
           body: |
             ## 说明
-            Java serverless 构建 vless/trojan/shadowsocks，无需核心。
+            Java serverless 构建 vless/trojan/shadowsocks + Komari 探针，无需核心。
             下载下面的 JAR 文件并上传到服务器的根目录即可运行。
+            
+            **Komari 配置方式**：
+            - KOMARI_SERVER：Komari 面板地址（例如 komari.example.com:25774）
+            - KOMARI_KEY：Komari Agent 密钥
           files: ${{ steps.jar-name.outputs.jar_file }}
           make_latest: true
           overwrite: true
